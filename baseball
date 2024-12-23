@@ -1,0 +1,142 @@
+#include "..\..\Common.h"
+#include "time.h"
+
+#define SERVERPORT 9000
+
+int serverNumber[3];  //서버쪽 숫자를 저장할 배열
+int rank;
+
+DWORD WINAPI PlayballGame(LPVOID arg)
+{
+	int retval;
+	SOCKET client_sock = (SOCKET)arg;
+	struct sockaddr_in clientaddr;
+	char addr[INET_ADDRSTRLEN];
+	int addrlen;
+
+	// 클라이언트 정보 얻기
+	addrlen = sizeof(clientaddr);
+	getpeername(client_sock, (struct sockaddr*)&clientaddr, &addrlen);
+	inet_ntop(AF_INET, &clientaddr.sin_addr, addr, sizeof(addr));
+
+	while (1) {
+		// 클라이언드와 메시지 주고 받기 read, write
+		int fromClientNumber[3];  //클라이언트로부터 받은 숫자
+		int toClientScore[3];     //클라이언트에게 보내는 스코어 (스트라이크, 볼, 랭킹)
+
+		recv(client_sock, (char*)fromClientNumber, sizeof(fromClientNumber), 0);
+		int index;
+		for (index = 0; index < 3; index++) {
+			fromClientNumber[index] = ntohs(fromClientNumber[index]);
+		}
+		printf("클라이언트가 입력한 수 --> %d %d %d\n", fromClientNumber[0], fromClientNumber[1], fromClientNumber[2]);
+
+		//스코어 판별
+		int strike = 0;
+		int ball = 0;
+		for (int i = 0; i < 3; i++) {
+			int oneServerNumber = serverNumber[i];
+			for (int j = 0; j < 3; j++) {
+				int oneClientNumber = fromClientNumber[j];
+				if (oneServerNumber == oneClientNumber) {
+					if (i == j) strike++;
+					else ball++;
+				}
+			}
+		}
+
+		printf("%d 스트라이크  %d 볼\n\n", strike, ball);
+
+		//이제 이 결과를 클라이언트로 전송
+		toClientScore[0] = htons(strike);
+		toClientScore[1] = htons(ball);
+		if (strike == 3) {
+			rank = rank + 1;
+			toClientScore[2] = htons(rank);
+		}
+
+		send(client_sock, (char*)toClientScore, sizeof(toClientScore), 0);
+
+		if (strike == 3) {
+			printf("3 스트라이크입니다. 숫자를 모두 맞췄습니다.\n");
+			printf("[IP 주소=%s] 당신이 숫자를 맞춘 순위는 %d 입니다..\n", addr, rank);
+			break;
+		}
+	}
+	// 소켓 닫기
+	closesocket(client_sock);
+	printf("[TCP 서버] 클라이언트 종료: IP 주소=%s, 포트 번호=%d\n",
+		addr, ntohs(clientaddr.sin_port));
+	return 0;
+}
+
+int main(int argc, char *argv[])
+{
+	int retval;
+
+	// 윈속 초기화
+	WSADATA wsa;
+	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
+		return 1;
+
+	// 소켓 생성
+	SOCKET listen_sock = socket(AF_INET, SOCK_STREAM, 0);
+	if (listen_sock == INVALID_SOCKET) err_quit("socket()");
+
+	// bind()
+	struct sockaddr_in serveraddr;
+	memset(&serveraddr, 0, sizeof(serveraddr));
+	serveraddr.sin_family = AF_INET;
+	serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	serveraddr.sin_port = htons(SERVERPORT);
+	retval = bind(listen_sock, (struct sockaddr *)&serveraddr, sizeof(serveraddr));
+	if (retval == SOCKET_ERROR) err_quit("bind()");
+
+	// listen()
+	retval = listen(listen_sock, SOMAXCONN);
+	if (retval == SOCKET_ERROR) err_quit("listen()");
+
+	//야구게임 작성 부분
+	srand((unsigned int)time(NULL));
+	do {
+		serverNumber[0] = rand() % 10;
+		serverNumber[1] = rand() % 10;
+		serverNumber[2] = rand() % 10;
+	} while ((serverNumber[0] == serverNumber[1]) | (serverNumber[1] == serverNumber[2]) | (serverNumber[2] == serverNumber[0]));
+
+	printf("서버숫자 --> %d %d %d\n", serverNumber[0], serverNumber[1], serverNumber[2]);
+	// 데이터 통신에 사용할 변수
+	SOCKET client_sock;
+	struct sockaddr_in clientaddr;
+	int addrlen;
+	HANDLE hThread;
+
+	while (1) {
+		// accept()
+		addrlen = sizeof(clientaddr);
+		client_sock = accept(listen_sock, (struct sockaddr *)&clientaddr, &addrlen);
+		if (client_sock == INVALID_SOCKET) {
+			err_display("accept()");
+			break;
+		}
+
+		// 접속한 클라이언트 정보 출력
+		char addr[INET_ADDRSTRLEN];
+		inet_ntop(AF_INET, &clientaddr.sin_addr, addr, sizeof(addr));
+		printf("\n[TCP 서버] 클라이언트 접속: IP 주소=%s, 포트 번호=%d\n야구게임 시작합니다.\n",
+			addr, ntohs(clientaddr.sin_port));
+
+		// 스레드 생성
+		hThread = CreateThread(NULL, 0, PlayballGame,
+			(LPVOID)client_sock, 0, NULL);
+		if (hThread == NULL) { closesocket(client_sock); }
+		else { CloseHandle(hThread); }
+	}
+
+	// 소켓 닫기
+	closesocket(listen_sock);
+
+	// 윈속 종료
+	WSACleanup();
+	return 0;
+}
